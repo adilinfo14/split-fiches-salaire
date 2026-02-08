@@ -1,0 +1,92 @@
+UTILISATION DE GIT – SPLIT FICHES DE SALAIRE
+===========================================
+
+OBJECTIF
+--------
+- Versionner uniquement le code et les fichiers utiles
+- NE PAS versionner : output/, logs/, errors/, PDF utilisateurs, .venv, exe
+
+
+1) SE PLACER DANS LE DOSSIER DU PROJET
+-------------------------------------
+cd "C:\Users\Utilisateur\OneDrive\Dev Python\split-fiches-salaire"
+
+
+2) VÉRIFIER L'ÉTAT DU REPO
+-------------------------
+git status
+
+
+3) AJOUTER / MODIFIER LE .gitignore (SI BESOIN)
+-----------------------------------------------
+Contenu minimum recommandé :
+
+.venv/
+__pycache__/
+*.pyc
+
+output/
+logs/
+errors/
+
+input/*.pdf
+
+build/
+dist/
+*.spec
+
+
+4) RETIRER DES FICHIERS DÉJÀ TRACKÉS (UNE SEULE FOIS)
+----------------------------------------------------
+Si output/, logs/, errors/ ont déjà été envoyés sur GitHub :
+
+git rm -r --cached output logs errors
+
+Si des PDF ont déjà été envoyés :
+
+git rm --cached input/*.pdf
+
+
+5) AJOUTER LES MODIFICATIONS
+----------------------------
+git add .
+
+
+6) COMMIT
+---------
+git commit -m "Update payslip splitter (UI, multipage, CSV export)"
+
+
+7) PUSH VERS GITHUB
+-------------------
+git push
+
+Si Git affiche :
+"The current branch main has no upstream branch"
+
+Faire UNE SEULE FOIS :
+git push -u origin main
+
+
+8) VÉRIFICATION FINALE
+---------------------
+git status
+
+Résultat attendu :
+"nothing to commit, working tree clean"
+
+
+9) BONNES PRATIQUES
+-------------------
+- Ne jamais pousser :
+  - output/
+  - logs/
+  - errors/
+  - dist/
+  - .exe
+- L’exe se publie uniquement via GitHub > Releases
+- Toujours :
+  - git status
+  - git add .
+  - git commit
+  - git push

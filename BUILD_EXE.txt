@@ -1,0 +1,56 @@
+CONSTRUIRE L'EXE – SPLIT FICHES DE SALAIRE
+========================================
+
+PRÉREQUIS
+---------
+- Windows
+- Python installé
+- Environnement virtuel (.venv) actif
+
+
+1) SE PLACER DANS LE DOSSIER DU PROJET
+-------------------------------------
+cd "C:\Users\Utilisateur\OneDrive\Dev Python\split-fiches-salaire"
+
+
+2) ACTIVER L'ENVIRONNEMENT VIRTUEL
+---------------------------------
+.venv\Scripts\activate
+
+
+3) INSTALLER LES DÉPENDANCES (UNE SEULE FOIS)
+---------------------------------------------
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install pyinstaller
+
+
+4) CONSTRUIRE L'EXE (VERSION FINALE – SANS CONSOLE)
+---------------------------------------------------
+pyinstaller --onefile --noconsole --name split-fiches-salairevsrc\split_fiches.py
+
+
+5) RÉSULTAT
+-----------
+L'exécutable est créé ici :
+dist\split-fiches-salaire.exe
+
+
+6) TEST
+-------
+Double-clique sur :
+dist\split-fiches-salaire.exe
+
+L’interface graphique doit s’ouvrir.
+
+
+7) VERSION DEBUG (SI PROBLÈME)
+------------------------------
+pyinstaller ^
+  --onefile ^
+  --console ^
+  --name split-fiches-salaire-debug ^
+  src\split_fiches.py
+
+Puis lancer :
+dist\split-fiches-salaire-debug.exe

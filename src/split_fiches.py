@@ -16,52 +16,70 @@ from pypdf import PdfReader, PdfWriter
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+# Optional drag & drop support (tkinterdnd2)
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    HAS_DND = True
+except Exception:
+    HAS_DND = False
 
-# ---------------- Parsing rules ----------------
+# ------------------- Naming rules (NEW) -------------------
+# Format demandé : ANNEE-mois-AVS.pdf  -> ex: 2026-janvier-756.1234.5678.97.pdf
 
-CIVILITY_RE = re.compile(r"\b(Madame|Monsieur)\b\s+([A-ZÀ-ÖØ-Ý][A-ZÀ-ÖØ-Ý\s\-']+)", re.UNICODE)
+MONTHS_FR = {
+    "01": "janvier",
+    "02": "fevrier",
+    "03": "mars",
+    "04": "avril",
+    "05": "mai",
+    "06": "juin",
+    "07": "juillet",
+    "08": "aout",
+    "09": "septembre",
+    "10": "octobre",
+    "11": "novembre",
+    "12": "decembre",
+}
+
+# Période : 12.2025
 PERIOD_RE = re.compile(r"Période\s*:\s*(\d{2})\.(\d{4})", re.UNICODE)
 
-UPPER_NAME_RE = re.compile(r"^[A-ZÀ-ÖØ-Ý]{2,}(?:[\s\-'][A-ZÀ-ÖØ-Ý]{2,})+$", re.UNICODE)
-UPPER_EXCLUDE = {"OSAD", "HELVETIA", "SARL", "DECOMPTE", "DÉCOMPTE", "SALAIRE"}
+# AVS : 756.1234.5678.97
+AVS_RE = re.compile(r"\b\d{3}\.\d{4}\.\d{4}\.\d{2}\b")
 
 
-def clean_filename(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"[^\w\s\-]", "", text, flags=re.UNICODE)
-    text = re.sub(r"\s+", "_", text)
-    return text[:120] if len(text) > 120 else text
+def extract_filename_year_month_avs(page_text: str) -> Optional[str]:
+    """
+    Retourne un filename au format: YYYY-mois-AVS.pdf
+    ou None si période/AVS non trouvés.
+    """
+    text = page_text or ""
 
-
-def extract_name(text: str) -> Optional[str]:
-    text = text or ""
-    m_civ = CIVILITY_RE.search(text)
-    if m_civ:
-        return m_civ.group(2)
-
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    for line in lines[:25]:
-        if UPPER_NAME_RE.match(line):
-            upper_words = set(re.split(r"[\s\-']+", line))
-            if upper_words & UPPER_EXCLUDE:
-                continue
-            return line
-    return None
-
-
-def extract_period(text: str) -> Optional[str]:
-    m = PERIOD_RE.search(text or "")
-    if not m:
+    m_per = PERIOD_RE.search(text)
+    if not m_per:
         return None
-    return f"{m.group(1)}-{m.group(2)}"
+    month_num = m_per.group(1)
+    year = m_per.group(2)
+    month_name = MONTHS_FR.get(month_num)
+    if not month_name:
+        return None
+
+    m_avs = AVS_RE.search(text)
+    if not m_avs:
+        return None
+    avs = m_avs.group(0)
+
+    return f"{year}-{month_name}-{avs}.pdf"
 
 
 def is_new_payslip_page(text: str) -> bool:
-    # Heuristic: a payslip "header" page contains BOTH name and period
-    return (extract_name(text) is not None) and (extract_period(text) is not None)
+    """
+    Début d'une fiche = une page qui contient à la fois Période et AVS
+    """
+    return extract_filename_year_month_avs(text) is not None
 
 
-# ---------------- Logging & OS helpers ----------------
+# ------------------- Logging & OS helpers -------------------
 
 def setup_logger(log_path: Path) -> logging.Logger:
     logger = logging.getLogger("split_payslips")
@@ -97,7 +115,7 @@ def open_file(path: Path):
         webbrowser.open(path.as_uri())
 
 
-# ---------------- Project dirs (as you requested) ----------------
+# ------------------- Project dirs (as requested) -------------------
 
 def project_root() -> Path:
     # split-fiches-salaire/
@@ -121,7 +139,7 @@ def make_dirs(root: Path, timestamp: str):
     return ok_dir, err_dir, logs_dir
 
 
-# ---------------- PDF writing helpers ----------------
+# ------------------- PDF writing helpers -------------------
 
 def write_pages(reader: PdfReader, page_indices: list[int], out_path: Path):
     writer = PdfWriter()
@@ -131,13 +149,14 @@ def write_pages(reader: PdfReader, page_indices: list[int], out_path: Path):
         writer.write(f)
 
 
-# ---------------- Records + CSV ----------------
+# ------------------- Records + CSV -------------------
 
 @dataclass
 class Record:
     status: str                 # OK / FALLBACK / ERROR / ORPHAN
-    name: str                   # employee name or "-"
-    period: str                 # mm-yyyy or "-"
+    year: str                   # YYYY or "-"
+    month: str                  # mois fr or "-"
+    avs: str                    # AVS or "-"
     pages: str                  # "1-2" etc
     output_file: str            # filename or "-"
     output_path: str            # absolute path or "-"
@@ -148,12 +167,25 @@ def export_csv(records: list[Record], csv_path: Path):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["status", "name", "period", "pages", "output_file", "output_path", "note"])
+        w.writerow(["status", "year", "month", "avs", "pages", "output_file", "output_path", "note"])
         for r in records:
-            w.writerow([r.status, r.name, r.period, r.pages, r.output_file, r.output_path, r.note])
+            w.writerow([r.status, r.year, r.month, r.avs, r.pages, r.output_file, r.output_path, r.note])
 
 
-# ---------------- Core split logic (multipage + UI-friendly records) ----------------
+def parse_year_month_avs_from_filename(filename: str):
+    """
+    filename attendu: YYYY-mois-AVS.pdf
+    retourne (year, month, avs) sinon ('-','-','-')
+    """
+    try:
+        base = filename.replace(".pdf", "")
+        year, month, avs = base.split("-", 2)
+        return year, month, avs
+    except Exception:
+        return "-", "-", "-"
+
+
+# ------------------- Core split logic (multi-pages + records) -------------------
 
 def split_pdf(
     input_pdf: Path,
@@ -186,22 +218,21 @@ def split_pdf(
             page_no = i + 1
             try:
                 text = reader.pages[i].extract_text() or ""
-                nm = extract_name(text)
-                pr = extract_period(text)
+                filename = extract_filename_year_month_avs(text)
 
-                if nm and pr:
-                    filename = f"{clean_filename(nm.title())}_{pr}.pdf"
+                if filename:
                     out_path = ok_dir / filename
                     if out_path.exists():
-                        out_path = ok_dir / f"{clean_filename(nm.title())}_{pr}_page{page_no:03d}.pdf"
+                        out_path = ok_dir / f"{filename[:-4]}_page{page_no:03d}.pdf"
+
                     write_pages(reader, [i], out_path)
                     ok_files += 1
                     logger.info(f"✅ Page {page_no}/{total_pages} -> OK -> {out_path.name}")
 
+                    year, month, avs = parse_year_month_avs_from_filename(out_path.name)
                     records.append(Record(
                         status="OK",
-                        name=nm.title(),
-                        period=pr,
+                        year=year, month=month, avs=avs,
                         pages=f"{page_no}",
                         output_file=out_path.name,
                         output_path=str(out_path.resolve()),
@@ -211,16 +242,15 @@ def split_pdf(
                     out_path = err_dir / f"fiche_page_{page_no:03d}.pdf"
                     write_pages(reader, [i], out_path)
                     fallback_pages += 1
-                    logger.warning(f"⚠️ Page {page_no}: nom/période non détectés -> errors -> {out_path.name}")
+                    logger.warning(f"⚠️ Page {page_no}: période/AVS non détectés -> errors -> {out_path.name}")
 
                     records.append(Record(
                         status="FALLBACK",
-                        name=nm.title() if nm else "-",
-                        period=pr if pr else "-",
+                        year="-", month="-", avs="-",
                         pages=f"{page_no}",
                         output_file=out_path.name,
                         output_path=str(out_path.resolve()),
-                        note="nom/période non détectés",
+                        note="période/AVS non détectés",
                     ))
 
             except Exception as e:
@@ -228,17 +258,19 @@ def split_pdf(
                 out_path = err_dir / f"error_page_{page_no:03d}.pdf"
                 try:
                     write_pages(reader, [i], out_path)
+                    op = str(out_path.resolve())
+                    of = out_path.name
                 except Exception:
-                    out_path = Path("-")
+                    op = "-"
+                    of = "-"
                 logger.error(f"❌ Page {page_no}: {type(e).__name__} - {e}")
 
                 records.append(Record(
                     status="ERROR",
-                    name="-",
-                    period="-",
+                    year="-", month="-", avs="-",
                     pages=f"{page_no}",
-                    output_file=out_path.name if out_path != Path("-") else "-",
-                    output_path=str(out_path.resolve()) if out_path != Path("-") else "-",
+                    output_file=of,
+                    output_path=op,
                     note=f"{type(e).__name__}: {e}",
                 ))
 
@@ -256,12 +288,11 @@ def split_pdf(
 
     # ---- Mode 2: group multi-pages
     current_pages: list[int] = []
-    current_name: Optional[str] = None
-    current_period: Optional[str] = None
+    current_filename: Optional[str] = None
     current_start_page: Optional[int] = None
 
     def flush_current():
-        nonlocal ok_files, fallback_pages, errors, current_pages, current_name, current_period, current_start_page
+        nonlocal ok_files, fallback_pages, errors, current_pages, current_filename, current_start_page
         if not current_pages:
             return
 
@@ -269,20 +300,20 @@ def split_pdf(
         end_page = current_pages[-1] + 1
         pages_str = f"{start_page}-{end_page}" if start_page != end_page else f"{start_page}"
 
-        if current_name and current_period:
-            base = f"{clean_filename(current_name.title())}_{current_period}.pdf"
-            out_path = ok_dir / base
+        if current_filename:
+            out_path = ok_dir / current_filename
             if out_path.exists():
-                out_path = ok_dir / f"{clean_filename(current_name.title())}_{current_period}_p{start_page:03d}.pdf"
+                out_path = ok_dir / f"{current_filename[:-4]}_p{start_page:03d}.pdf"
+
             try:
                 write_pages(reader, current_pages, out_path)
                 ok_files += 1
                 logger.info(f"✅ Fiche pages {pages_str} -> OK -> {out_path.name}")
 
+                year, month, avs = parse_year_month_avs_from_filename(out_path.name)
                 records.append(Record(
                     status="OK",
-                    name=current_name.title(),
-                    period=current_period,
+                    year=year, month=month, avs=avs,
                     pages=pages_str,
                     output_file=out_path.name,
                     output_path=str(out_path.resolve()),
@@ -293,20 +324,19 @@ def split_pdf(
                 out_err = err_dir / f"error_slip_p{start_page:03d}.pdf"
                 try:
                     write_pages(reader, current_pages, out_err)
-                    out_path_str = str(out_err.resolve())
-                    out_file = out_err.name
+                    op = str(out_err.resolve())
+                    of = out_err.name
                 except Exception:
-                    out_path_str = "-"
-                    out_file = "-"
+                    op = "-"
+                    of = "-"
                 logger.error(f"❌ Fiche p{start_page:03d}: {type(e).__name__} - {e}")
 
                 records.append(Record(
                     status="ERROR",
-                    name=current_name.title(),
-                    period=current_period,
+                    year="-", month="-", avs="-",
                     pages=pages_str,
-                    output_file=out_file,
-                    output_path=out_path_str,
+                    output_file=of,
+                    output_path=op,
                     note=f"{type(e).__name__}: {e}",
                 ))
         else:
@@ -314,25 +344,22 @@ def split_pdf(
             try:
                 write_pages(reader, current_pages, out_err)
                 fallback_pages += len(current_pages)
-                logger.warning(f"⚠️ Fiche pages {pages_str}: nom/période non détectés -> errors -> {out_err.name}")
+                logger.warning(f"⚠️ Fiche pages {pages_str}: période/AVS non détectés -> errors -> {out_err.name}")
 
                 records.append(Record(
                     status="FALLBACK",
-                    name=current_name.title() if current_name else "-",
-                    period=current_period if current_period else "-",
+                    year="-", month="-", avs="-",
                     pages=pages_str,
                     output_file=out_err.name,
                     output_path=str(out_err.resolve()),
-                    note="nom/période non détectés",
+                    note="période/AVS non détectés",
                 ))
             except Exception as e:
                 errors += 1
                 logger.error(f"❌ Fiche inconnue p{start_page:03d}: {type(e).__name__} - {e}")
-
                 records.append(Record(
                     status="ERROR",
-                    name="-",
-                    period="-",
+                    year="-", month="-", avs="-",
                     pages=pages_str,
                     output_file="-",
                     output_path="-",
@@ -340,23 +367,21 @@ def split_pdf(
                 ))
 
         current_pages = []
-        current_name = None
-        current_period = None
+        current_filename = None
         current_start_page = None
 
     for i in range(total_pages):
         page_no = i + 1
         try:
             text = reader.pages[i].extract_text() or ""
+            filename = extract_filename_year_month_avs(text)
 
-            if is_new_payslip_page(text):
+            if filename:
                 # new slip starts -> flush previous
                 if current_pages:
                     flush_current()
-
                 current_pages = [i]
-                current_name = extract_name(text)
-                current_period = extract_period(text)
+                current_filename = filename
                 current_start_page = page_no
             else:
                 if current_pages:
@@ -371,8 +396,7 @@ def split_pdf(
 
                     records.append(Record(
                         status="ORPHAN",
-                        name="-",
-                        period="-",
+                        year="-", month="-", avs="-",
                         pages=f"{page_no}",
                         output_file=out_err.name,
                         output_path=str(out_err.resolve()),
@@ -384,20 +408,19 @@ def split_pdf(
             out_err = err_dir / f"error_page_{page_no:03d}.pdf"
             try:
                 write_pages(reader, [i], out_err)
-                out_path_str = str(out_err.resolve())
-                out_file = out_err.name
+                op = str(out_err.resolve())
+                of = out_err.name
             except Exception:
-                out_path_str = "-"
-                out_file = "-"
+                op = "-"
+                of = "-"
             logger.error(f"❌ Page {page_no}: {type(e).__name__} - {e}")
 
             records.append(Record(
                 status="ERROR",
-                name="-",
-                period="-",
+                year="-", month="-", avs="-",
                 pages=f"{page_no}",
-                output_file=out_file,
-                output_path=out_path_str,
+                output_file=of,
+                output_path=op,
                 note=f"{type(e).__name__}: {e}",
             ))
 
@@ -423,7 +446,7 @@ def split_pdf(
     }
 
 
-# ---------------- Professional UI (table + CSV + open selected) ----------------
+# ------------------- UI (professional) -------------------
 
 class AppUI(ttk.Frame):
     def __init__(self, master: tk.Tk, root: Path):
@@ -463,7 +486,7 @@ class AppUI(ttk.Frame):
         ttk.Label(self, text="Split fiches de salaire (PDF)", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             self,
-            text="Sorties dans split-fiches-salaire/ : output/ logs/ errors/ + export CSV de contrôle.",
+            text="Nommage: ANNEE-mois-AVS.pdf | Sorties: output/ logs/ errors/ (au niveau du projet)",
             style="Hint.TLabel",
         ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(2, 12))
 
@@ -471,15 +494,21 @@ class AppUI(ttk.Frame):
         file_frame = ttk.LabelFrame(self, text="Fichier source", padding=12)
         file_frame.grid(row=2, column=0, columnspan=6, sticky="we")
 
-        entry = ttk.Entry(file_frame, textvariable=self.pdf_var, width=110)
+        entry = tk.Entry(file_frame, textvariable=self.pdf_var, width=110)
         entry.grid(row=0, column=0, sticky="we")
         ttk.Button(file_frame, text="Choisir…", command=self.pick_pdf).grid(row=0, column=1, padx=(10, 0))
+        # Register drop target on the entry if DND available
+        if HAS_DND:
+            try:
+                entry.drop_target_register(DND_FILES)
+                entry.dnd_bind('<<Drop>>', self._on_drop)
+            except Exception:
+                pass
         file_frame.columnconfigure(0, weight=1)
 
         # Options
         opt_frame = ttk.LabelFrame(self, text="Options", padding=12)
         opt_frame.grid(row=3, column=0, columnspan=6, sticky="we", pady=(12, 0))
-
         ttk.Checkbutton(
             opt_frame,
             text="Grouper les fiches multi-pages (recommandé)",
@@ -508,7 +537,6 @@ class AppUI(ttk.Frame):
         # Progress
         self.status_var = tk.StringVar(value="Prêt.")
         ttk.Label(self, textvariable=self.status_var).grid(row=5, column=0, columnspan=6, sticky="w", pady=(12, 6))
-
         self.progress = ttk.Progressbar(self, mode="determinate", length=940)
         self.progress.grid(row=6, column=0, columnspan=6, sticky="we")
 
@@ -516,21 +544,24 @@ class AppUI(ttk.Frame):
         table_frame = ttk.LabelFrame(self, text="Résultats", padding=10)
         table_frame.grid(row=7, column=0, columnspan=6, sticky="we", pady=(14, 0))
 
-        cols = ("status", "name", "period", "pages", "file", "note")
+        cols = ("status", "year", "month", "avs", "pages", "file", "note")
         self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=14)
+
         self.tree.heading("status", text="Statut")
-        self.tree.heading("name", text="Nom")
-        self.tree.heading("period", text="Période")
+        self.tree.heading("year", text="Année")
+        self.tree.heading("month", text="Mois")
+        self.tree.heading("avs", text="AVS")
         self.tree.heading("pages", text="Pages")
         self.tree.heading("file", text="Fichier")
         self.tree.heading("note", text="Note")
 
         self.tree.column("status", width=90, anchor="center")
-        self.tree.column("name", width=210)
-        self.tree.column("period", width=90, anchor="center")
+        self.tree.column("year", width=70, anchor="center")
+        self.tree.column("month", width=90, anchor="center")
+        self.tree.column("avs", width=150)
         self.tree.column("pages", width=80, anchor="center")
-        self.tree.column("file", width=260)
-        self.tree.column("note", width=260)
+        self.tree.column("file", width=230)
+        self.tree.column("note", width=220)
 
         yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
@@ -538,14 +569,47 @@ class AppUI(ttk.Frame):
         self.tree.grid(row=0, column=0, sticky="we")
         yscroll.grid(row=0, column=1, sticky="ns")
 
-        table_frame.columnconfigure(0, weight=1)
+        # Double-click: open the selected file
+        self.tree.bind("<Double-1>", lambda e: self.open_selected())
 
+        table_frame.columnconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
 
     def pick_pdf(self):
         p = filedialog.askopenfilename(title="Choisir un PDF", filetypes=[("PDF", "*.pdf")])
         if p:
             self.pdf_var.set(p)
+
+        def _on_drop(self, event):
+                """Handle drop events from tkinterdnd2.
+
+                event.data can be a string like:
+                    {C:\\path\\to\\file.pdf}
+                or multiple files separated by space. We take the first PDF.
+                """
+        try:
+            data = event.data
+        except Exception:
+            return
+
+        if not data:
+            return
+
+        # Remove surrounding braces if present
+        if data.startswith('{') and data.endswith('}'):
+            data = data[1:-1]
+
+        # Split on spaces (handles multiple files)
+        parts = data.split()
+        if not parts:
+            return
+
+        path = parts[0].strip('"')
+        # Set in entry if it's a PDF
+        if path.lower().endswith('.pdf'):
+            self.pdf_var.set(path)
+        else:
+            messagebox.showwarning("Format invalide", "Glisse un fichier PDF.")
 
     def run(self):
         pdf = self.pdf_var.get().strip()
@@ -599,11 +663,9 @@ class AppUI(ttk.Frame):
             )
 
             self.records = result["records"]
-            # Auto-export CSV
             export_csv(self.records, self.csv_path)
 
             self.master.after(0, lambda: self._finish(result))
-
         except Exception as e:
             self.master.after(0, lambda: self._fail(e))
 
@@ -613,9 +675,8 @@ class AppUI(ttk.Frame):
         self.status_var.set(f"Traitement… {done}/{total}")
 
     def _finish(self, result: dict):
-        # Fill table
         for r in self.records:
-            self.tree.insert("", "end", values=(r.status, r.name, r.period, r.pages, r.output_file, r.note))
+            self.tree.insert("", "end", values=(r.status, r.year, r.month, r.avs, r.pages, r.output_file, r.note))
 
         self.run_btn.config(state="normal")
         self.open_output_btn.config(state="normal")
@@ -625,7 +686,7 @@ class AppUI(ttk.Frame):
         self.open_selected_btn.config(state="normal")
 
         self.status_var.set(
-            f"Terminé — Fichiers OK: {result['ok_files']} | Fallback pages: {result['fallback_pages']} | Orphans: {result['orphans']} | Erreurs: {result['errors']}"
+            f"Terminé — OK: {result['ok_files']} | fallback pages: {result['fallback_pages']} | orphans: {result['orphans']} | erreurs: {result['errors']}"
         )
 
         messagebox.showinfo(
@@ -678,10 +739,9 @@ class AppUI(ttk.Frame):
             messagebox.showinfo("Sélection", "Sélectionne une ligne dans le tableau.")
             return
         values = self.tree.item(sel[0], "values")
-        # columns: status, name, period, pages, file, note
-        filename = values[4]
-        # find record matching that filename + pages
-        pages = values[3]
+        filename = values[5]  # file column
+        pages = values[4]     # pages column
+
         rec = next((r for r in self.records if r.output_file == filename and r.pages == pages), None)
         if rec and rec.output_path != "-" and Path(rec.output_path).exists():
             open_file(Path(rec.output_path))
@@ -689,7 +749,7 @@ class AppUI(ttk.Frame):
             messagebox.showwarning("Impossible", "Fichier introuvable (ou non enregistré).")
 
 
-# ---------------- CLI ----------------
+# ------------------- CLI -------------------
 
 def run_cli(pdf_path: str, multipage: bool):
     root = project_root()
@@ -720,7 +780,13 @@ def main():
     if args.pdf:
         run_cli(args.pdf, multipage=not args.no_multipage)
     else:
-        app = tk.Tk()
+        if HAS_DND:
+            try:
+                app = TkinterDnD.Tk()
+            except Exception:
+                app = tk.Tk()
+        else:
+            app = tk.Tk()
         AppUI(app, root)
         app.mainloop()
 

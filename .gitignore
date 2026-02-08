@@ -1,19 +1,17 @@
-# Python
+# Environnement Python
+.venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.venv/
-env/
 
-# PyInstaller
+# Données générées
+output/
+logs/
+errors/
+
+# Fichiers utilisateurs
+input/*.pdf
+
+# Build exe
 build/
 dist/
 *.spec
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
